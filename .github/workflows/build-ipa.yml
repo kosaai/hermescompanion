@@ -1,0 +1,91 @@
+
+name: Build Hermes Companion IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "Sources/**"
+      - "ControlWidget/**"
+      - "GatewayPlugin/**"
+      - "GatewayPatches/**"
+      - "project.yml"
+      - ".github/workflows/build-ipa.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen version
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate
+          test -d HermesCompanion.xcodeproj
+
+      - name: Verify scheme
+        run: |
+          xcodebuild \
+            -project HermesCompanion.xcodeproj \
+            -list
+
+      - name: Build for physical iPhone
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project HermesCompanion.xcodeproj \
+            -scheme HermesCompanion \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee "$RUNNER_TEMP/build.log"
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/HermesCompanion.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "ERROR: Built app not found: $APP_PATH"
+            find "$RUNNER_TEMP/DerivedData/Build/Products" \
+              -maxdepth 4 -print
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
+
+          cd "$RUNNER_TEMP/ipa"
+          /usr/bin/zip -qry \
+            "$GITHUB_WORKSPACE/HermesCompanion-unsigned.ipa" \
+            Payload
+
+          test -s "$GITHUB_WORKSPACE/HermesCompanion-unsigned.ipa"
+          unzip -l "$GITHUB_WORKSPACE/HermesCompanion-unsigned.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HermesCompanion-unsigned-IPA
+          path: HermesCompanion-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
